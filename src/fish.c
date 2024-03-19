@@ -45,14 +45,14 @@ void add_fish(fish *queue, uint32_t *index, uint32_t *length, fish toAdd){
         queue = (fish*)realloc(queue, (*length)*3/2);
     }
 
-    queue[*index] = toAdd;
-    *index++;
+    queue[(*index)] = toAdd;
+    (*index)++;
 }
 
 fish remove_fish(fish *queue, uint32_t *index, uint32_t toRemove){
     fish removed = queue[toRemove];
-    queue[toRemove] = queue[*index - 1];
-    *index--;
+    queue[toRemove] = queue[(*index) - 1];
+    (*index)--;
 
     return removed;
 }
@@ -146,14 +146,6 @@ int main (int argc, char** argv){
     MPI_Comm_size(MPI_COMM_WORLD, &num_segments);
     srand(time(NULL) + rank);
 
-    if(rank != 0){          //Debug
-        MPI_Type_free(&mpi_fish);
-        MPI_Finalize();
-
-        return 0;
-    }
-
-    
     //Set local variables
     //Z dim for each segment in meters
     max_z_local = L / num_segments;
@@ -240,10 +232,9 @@ int main (int argc, char** argv){
                     if(bigger){
                         bigger->size++;
                         remove_fish(segment_local, &num_fish_local, smaller);
-                        puts("Entra?");
                         j--;
+                        printf("Rank %d, new size %d\n", rank, bigger->size);
                     }
-                    printf("Rank %d j: %d\n", rank, j);
                 }
             }
         }
@@ -255,7 +246,7 @@ int main (int argc, char** argv){
     //Sending info of fish eaten to the segments
 
     //If end of the day gather info on max and min size
-    /*if(time_in_seconds >= SECONDS_IN_DAY){
+    if(time_in_seconds >= SECONDS_IN_DAY){
         //Update day
         time_in_days++;
         time_in_seconds -= SECONDS_IN_DAY;
@@ -275,7 +266,7 @@ int main (int argc, char** argv){
         if(rank == 0){
             printf("Day %d: Max size = %d, Min size = %d\n", time_in_days, max_size_global, min_size_global);
         }
-    }*/
+    }
     
     MPI_Type_free(&mpi_fish);
     MPI_Finalize();
