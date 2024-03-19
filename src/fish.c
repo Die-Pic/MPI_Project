@@ -6,12 +6,12 @@
 #include <time.h>
 #include <math.h>
 
-#define N 50            //Number of fish (parameter)
+#define N 20            //Number of fish (parameter)
 #define L 10           //Dimension of fishtank (parameter)
 #define v 1             //Speed of fish (parameter)
 #define d 1             //Max eating distance (parameter)
 #define t 2             //Time of each step (parameter)
-#define MAX_SIZE 100
+#define MAX_SIZE 1000
 #define SECONDS_IN_DAY 2//86400 debug
 
 typedef struct fish{
