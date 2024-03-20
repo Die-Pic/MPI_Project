@@ -7,7 +7,7 @@
 #include <math.h>
 
 #define N 20            //Number of fish (parameter)
-#define L 10           //Dimension of fishtank (parameter)
+#define L 10            //Dimension of fishtank (parameter)
 #define v 1             //Speed of fish (parameter)
 #define d 1             //Max eating distance (parameter)
 #define t 2             //Time of each step (parameter)
@@ -32,7 +32,7 @@ fish *fish_entering = NULL;
 uint32_t length_entering = 0;
 //Queue of fish that can interact with fish from the next segment
 fish *fish_interaction_out = NULL;
-uint32_t index_interaction = 0, length_interaction = 0;
+uint32_t index_interaction_out = 0, length_interaction_out = 0;
 //Queue of fish from the previous segment that can interact with the local
 fish *fish_interaction_in = NULL;
 uint32_t length_interaction_in = 0;
@@ -43,6 +43,7 @@ void add_fish(fish *queue, uint32_t *index, uint32_t *length, fish toAdd){
     //If queue is full, increase size
     if(index == length){
         queue = (fish*)realloc(queue, (*length)*3/2);
+        (*length) = (*length)*3/2;
     }
 
     queue[(*index)] = toAdd;
@@ -63,6 +64,27 @@ double distance(fish f1, fish f2){
     int32_t z = f1.z - f2.z;
 
     return sqrt(x*x + y*y + z*z);
+}
+
+void eat_fish(fish *f1, fish *f2, uint32_t *i, uint32_t *j){
+    fish *bigger = NULL;
+    uint32_t smaller;
+    
+    if(f1->size > f2->size){
+        bigger = f1;
+        smaller = (*j);
+    }
+    else if(f1->size < f2->size){
+        bigger = f2;
+        smaller = (*i);
+    }
+
+    //If not same size the bigger increase size and the smaller is removed (he ded)
+    if(bigger){
+        bigger->size++;
+        remove_fish(segment_local, &num_fish_local, smaller);
+        (*j)--;                                                        //Necessary to confront all pairs (based on the way the remove works)
+    }
 }
 
 void move_fish(uint32_t toMove){
@@ -90,14 +112,6 @@ void move_fish(uint32_t toMove){
         }
 
         segment_local[toMove].z += distance;
-        
-        //Fish can be eat by another fish in the near segment
-        if(segment_local[toMove].z > max_z_local - d){
-            //Adjusting coordinate z to allow next segment to calculate the distance correctly
-            fish temp = segment_local[toMove];
-            temp.z = temp.z - max_z_local;
-            add_fish(fish_interaction_out, &index_interaction, &length_interaction, temp);
-        }
         break;
     }
 }
@@ -171,7 +185,7 @@ int main (int argc, char** argv){
     index_exit = 0, length_exit = num_fish_local;
 
     fish_interaction_out = (fish*)malloc(sizeof(fish)*num_fish_local);
-    index_interaction = 0, length_interaction = num_fish_local;
+    index_interaction_out = 0, length_interaction_out = num_fish_local;
     
     //Initialization
     memset(segment_local, 0, sizeof(fish)*num_fish_local);
@@ -200,7 +214,6 @@ int main (int argc, char** argv){
             min_size_local = segment_local[i].size;
         }
     }
-    printf("Rank %d Num local fish: %d\n", rank, num_fish_local);
 
     //Move the fish
     for (uint32_t i = 0; i < num_fish_local; i++){
@@ -209,39 +222,50 @@ int main (int argc, char** argv){
     time_in_seconds += t;
 
     //Send the fishes that are exiting the segment
+    /*#define EXIT_FISH 32
+    MPI_Request req;
+    MPI_Isend(fish_exiting, index_exit, mpi_fish, rank+1, EXIT_FISH, MPI_COMM_WORLD, &req);
+    //MPI_Recv(fish_entering, );    check how to get the num*/
+    for(uint32_t i = 0; i < length_entering; i++){
+        add_fish(segment_local, &num_fish_local, &length_segment_local, fish_entering[i]);
+    }
 
-    //Send the fish that are on the border of the segment (distance from border < eating distance)
 
     //Calculate the fish eaten locally (check there are at least 2 fish TODO)
     if(num_fish_local >= 2){
         for(uint32_t i = 0; i < num_fish_local; i++){
             for(uint32_t j = i+1; j < num_fish_local; j++){
-                if((int)distance(segment_local[i], segment_local[j]) <= d){
-                    fish *bigger = NULL;
-                    uint32_t smaller;
-                    if(segment_local[i].size > segment_local[j].size){
-                        bigger = &segment_local[i];
-                        smaller = j;
-                    }
-                    else if(segment_local[i].size < segment_local[j].size){
-                        bigger = &segment_local[j];
-                        smaller = i;
-                    }
-
-                    //If not same size the bigger increase size and the smaller is removed (he ded)
-                    if(bigger){
-                        bigger->size++;
-                        remove_fish(segment_local, &num_fish_local, smaller);
-                        j--;
-                        printf("Rank %d, new size %d\n", rank, bigger->size);
-                    }
+                fish *f1 = &segment_local[i];
+                fish *f2 = &segment_local[j];
+                if((int)distance(*f1, *f2) <= d){
+                    eat_fish(f1, f2, &i, &j);
                 }
             }
         }
     }
-    printf("Rank %d Num local fish: %d\n", rank, num_fish_local);
+    
+    //Checkign if the fish can interact with other in the next segment (distance from border < eating distance)
+    for(uint32_t i = 0; i < num_fish_local; i++){
+        if(segment_local[i].z > max_z_local - d){
+            //Adjusting coordinate z to allow next segment to calculate the distance correctly
+            fish temp = segment_local[i];
+            temp.z = temp.z - max_z_local;
+            add_fish(fish_interaction_out, &index_interaction_out, &length_interaction_out, temp);
+        }
+    }
 
     //Calculate fish eaten in other segment
+    for(uint32_t i = 0; i < length_interaction_in; i++){
+        for(uint32_t j = 0; j < num_fish_local; j++){
+            fish *f1 = &fish_interaction_in[i];
+            fish *f2 = &segment_local[j];
+
+            if(distance(*f1, *f2) <= d){
+                //If f1 eats then remove f2
+                //if f2 eats then communicate the result to previous segment to delete it
+            }
+        }
+    }
 
     //Sending info of fish eaten to the segments
 
