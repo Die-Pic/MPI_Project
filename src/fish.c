@@ -41,9 +41,10 @@ uint32_t max_z_local = 0;
 
 void add_fish(fish *queue, uint32_t *index, uint32_t *length, fish toAdd){
     //If queue is full, increase size
-    if(index == length){
-        queue = (fish*)realloc(queue, (*length)*3/2);
-        (*length) = (*length)*3/2;
+    if(index >= length){
+        puts("realloc");
+        queue = (fish*)realloc(queue, (*length)*2);
+        (*length) = (*length)*2;
     }
 
     queue[(*index)] = toAdd;
@@ -116,7 +117,7 @@ void move_fish(uint32_t toMove){
     }
 }
 
-int main (int argc, char** argv){
+int main (int argc, char const** argv){
     MPI_Init(NULL, NULL);
 
     //Creating fish MPI datatype
@@ -172,6 +173,7 @@ int main (int argc, char** argv){
     if(rank == 0){
         num_fish_local += N % num_segments;
     }
+    printf("process %d size local segment %d\n", rank, num_fish_local);
 
     //Time
     uint32_t time_in_seconds = 0;
@@ -189,9 +191,8 @@ int main (int argc, char** argv){
     
     //Initialization
     memset(segment_local, 0, sizeof(fish)*num_fish_local);
-    memset(fish_exiting, 0, sizeof(fish)*num_fish_local);
-    memset(fish_interaction_out, 0, sizeof(fish)*num_fish_local);
     
+    //min and max local
     uint16_t max_size_local = 0, min_size_local = 0xFF;
 
     //Spawn of all the fishes of the local segment
@@ -205,33 +206,32 @@ int main (int argc, char** argv){
         segment_local[i].size = (rand() % MAX_SIZE) + 1;
         segment_local[i].direction = rand() % 3;
         segment_local[i].speed = v;
-
-        //Updating local min and max size
-        if(segment_local[i].size > max_size_local){
-            max_size_local = segment_local[i].size;
-        }
-        if(segment_local[i].size < min_size_local){
-            min_size_local = segment_local[i].size;
-        }
     }
 
-    //Move the fish
+    //Move the fish (also puts fish in fish_exiting)
+    memset(fish_exiting, 0, sizeof(fish)*length_exit);
     for (uint32_t i = 0; i < num_fish_local; i++){
         move_fish(i);
     }
     time_in_seconds += t;
 
-    //Send the fishes that are exiting the segment
+    //Send the fish that are exiting the segment
     /*#define EXIT_FISH 32
-    MPI_Request req;
-    MPI_Isend(fish_exiting, index_exit, mpi_fish, rank+1, EXIT_FISH, MPI_COMM_WORLD, &req);
-    //MPI_Recv(fish_entering, );    check how to get the num*/
+    MPI_Request req1;
+    MPI_Isend(fish_exiting, index_exit, mpi_fish, (rank+1)%num_segments, EXIT_FISH, MPI_COMM_WORLD, &req1);
+    //Receiving fish
+    MPI_Status status_entering;
+    MPI_Probe(MPI_ANY_SOURCE, EXIT_FISH, MPI_COMM_WORLD, &status_entering);
+    MPI_Get_count(&status_entering, mpi_fish, &length_entering);
+    fish_entering = malloc(sizeof(fish)*length_entering);
+    MPI_Recv(fish_entering, length_entering, mpi_fish, MPI_ANY_SOURCE, EXIT_FISH, MPI_COMM_WORLD, &status_entering);
+
     for(uint32_t i = 0; i < length_entering; i++){
         add_fish(segment_local, &num_fish_local, &length_segment_local, fish_entering[i]);
     }
+    //free(fish_entering);*/
 
-
-    //Calculate the fish eaten locally (check there are at least 2 fish TODO)
+    //Calculate the fish eaten locally
     if(num_fish_local >= 2){
         for(uint32_t i = 0; i < num_fish_local; i++){
             for(uint32_t j = i+1; j < num_fish_local; j++){
@@ -245,6 +245,7 @@ int main (int argc, char** argv){
     }
     
     //Checkign if the fish can interact with other in the next segment (distance from border < eating distance)
+    memset(fish_interaction_out, 0, sizeof(fish)*length_interaction_out);
     for(uint32_t i = 0; i < num_fish_local; i++){
         if(segment_local[i].z > max_z_local - d){
             //Adjusting coordinate z to allow next segment to calculate the distance correctly
@@ -253,6 +254,17 @@ int main (int argc, char** argv){
             add_fish(fish_interaction_out, &index_interaction_out, &length_interaction_out, temp);
         }
     }
+
+    //Sending fish that can interact
+    /*#define FISH_INTERACTION 33
+    MPI_Request req2;
+    MPI_Isend(fish_interaction_out, index_interaction_out, mpi_fish, (rank+1)%num_segments, FISH_INTERACTION, MPI_COMM_WORLD, &req2);
+    //Receving fish that can interact
+    MPI_Status status_interaction;
+    MPI_Probe(MPI_ANY_SOURCE, FISH_INTERACTION, MPI_COMM_WORLD, &status_interaction);
+    MPI_Get_count(&status_interaction, mpi_fish, &length_interaction_in);
+    fish_interaction_in = malloc(sizeof(fish)*length_interaction_in);
+    MPI_Recv(fish_interaction_in, length_interaction_in, mpi_fish, MPI_ANY_SOURCE, FISH_INTERACTION, MPI_COMM_WORLD, &status_interaction);
 
     //Calculate fish eaten in other segment
     for(uint32_t i = 0; i < length_interaction_in; i++){
@@ -266,6 +278,7 @@ int main (int argc, char** argv){
             }
         }
     }
+    //free(fish_interaction_in);*/
 
     //Sending info of fish eaten to the segments
 
@@ -292,7 +305,13 @@ int main (int argc, char** argv){
         }
     }
     
-    MPI_Type_free(&mpi_fish);
+    //Free resources
+    //free(fish_exiting);
+    //free(fish_interaction_out);
+    //free(segment_local);
+    //MPI_Type_free(&mpi_fish);
+    printf("process %d size local segment %d\n", rank, num_fish_local);
+
     MPI_Finalize();
 
     return 0;
