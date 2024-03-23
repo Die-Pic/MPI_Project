@@ -6,7 +6,7 @@
 #include <time.h>
 #include <math.h>
 
-#define N 20            //Number of fish (parameter)
+#define N 50            //Number of fish (parameter)
 #define L 10            //Dimension of fishtank (parameter)
 #define v 1             //Speed of fish (parameter)
 #define d 1             //Max eating distance (parameter)
@@ -14,7 +14,7 @@
 #define MAX_SIZE 1000
 #define SECONDS_IN_DAY 2//86400 debug
 
-typedef struct fish{
+typedef struct fish_s{
     int32_t x, y, z;
     uint16_t speed;
     uint16_t size;
@@ -39,16 +39,18 @@ uint32_t length_interaction_in = 0;
 //Max dimention of the z coordinate for the local segment (used as boudary between segments)
 uint32_t max_z_local = 0;
 
-void add_fish(fish *queue, uint32_t *index, uint32_t *length, fish toAdd){
+fish* add_fish(fish *queue, uint32_t *index, uint32_t *length, fish toAdd){
     //If queue is full, increase size
-    if(index >= length){
-        puts("realloc");
-        queue = (fish*)realloc(queue, (*length)*2);
+    if((*index) >= (*length)){
+        queue = (fish*)realloc(queue, (*length) * 2 * sizeof(fish));
         (*length) = (*length)*2;
     }
 
     queue[(*index)] = toAdd;
     (*index)++;
+
+
+    return queue;
 }
 
 fish remove_fish(fish *queue, uint32_t *index, uint32_t toRemove){
@@ -108,7 +110,7 @@ void move_fish(uint32_t toMove){
             
             //Calculating new z coordinate in the next segment and add to exiting segment_local
             exiting_fish.z = (exiting_fish.z + distance) % max_z_local;
-            add_fish(fish_exiting, &index_exit, &length_exit, exiting_fish);
+            fish_exiting = add_fish(fish_exiting, &index_exit, &length_exit, exiting_fish);
             break;
         }
 
@@ -123,35 +125,19 @@ int main (int argc, char const** argv){
     //Creating fish MPI datatype
     fish fish_definition;
     MPI_Datatype mpi_fish;
-    int struct_len = 6;
-    int block_lens[struct_len];
-    MPI_Datatype types[struct_len];
+    int block_lens[6] = {1, 1, 1, 1, 1, 1};
+    MPI_Datatype types[6] = {  MPI_INT32_T, MPI_INT32_T, MPI_INT32_T,
+                                        MPI_UINT16_T, MPI_UINT16_T, MPI_UINT8_T};
     //Displacement
-    MPI_Aint displacements[struct_len];
-    MPI_Aint current_displacement = 0;
-    //3 coordinates
-    block_lens[0] = 1;
-    types[0] = MPI_INT32_T;
-    displacements[0] = (size_t) &(fish_definition.x) - (size_t) &fish_definition;
-    block_lens[1] = 1;
-    types[1] = MPI_INT32_T;
-    displacements[1] = (size_t) &(fish_definition.y) - (size_t) &fish_definition;
-    block_lens[2] = 1;
-    types[2] = MPI_INT32_T;
-    displacements[2] = (size_t) &(fish_definition.z) - (size_t) &fish_definition;
-    //Speed and size
-    block_lens[3] = 1;
-    types[3] = MPI_UINT16_T;
-    displacements[3] = (size_t) &(fish_definition.speed) - (size_t) &fish_definition;
-    block_lens[4] = 1;
-    types[4] = MPI_UINT16_T;
-    displacements[4] = (size_t) &(fish_definition.size) - (size_t) &fish_definition;
-    //Direction
-    block_lens[5] = 1;
-    types[5] = MPI_UINT8_T;
-    displacements[5] = (size_t) &(fish_definition.direction) - (size_t) &fish_definition;
+    MPI_Aint displacements[6];
+    displacements[0] = offsetof(fish, x);
+    displacements[1] = offsetof(fish, y);
+    displacements[2] = offsetof(fish, z);
+    displacements[3] = offsetof(fish, speed);
+    displacements[4] = offsetof(fish, size);
+    displacements[5] = offsetof(fish, direction);
     //Create mpi struct
-    MPI_Type_create_struct(struct_len, block_lens, displacements, types, &mpi_fish);
+    MPI_Type_create_struct(6, block_lens, displacements, types, &mpi_fish);
     MPI_Type_commit(&mpi_fish);
     
     //Obtaining number fo processes and rank
@@ -173,7 +159,6 @@ int main (int argc, char const** argv){
     if(rank == 0){
         num_fish_local += N % num_segments;
     }
-    printf("process %d size local segment %d\n", rank, num_fish_local);
 
     //Time
     uint32_t time_in_seconds = 0;
@@ -216,7 +201,7 @@ int main (int argc, char const** argv){
     time_in_seconds += t;
 
     //Send the fish that are exiting the segment
-    /*#define EXIT_FISH 32
+    #define EXIT_FISH 32
     MPI_Request req1;
     MPI_Isend(fish_exiting, index_exit, mpi_fish, (rank+1)%num_segments, EXIT_FISH, MPI_COMM_WORLD, &req1);
     //Receiving fish
@@ -226,10 +211,11 @@ int main (int argc, char const** argv){
     fish_entering = malloc(sizeof(fish)*length_entering);
     MPI_Recv(fish_entering, length_entering, mpi_fish, MPI_ANY_SOURCE, EXIT_FISH, MPI_COMM_WORLD, &status_entering);
 
+    //printf("Rank %d: num local fish=%d, length segment=%d\n", rank, num_fish_local, length_segment_local);
     for(uint32_t i = 0; i < length_entering; i++){
-        add_fish(segment_local, &num_fish_local, &length_segment_local, fish_entering[i]);
+        segment_local = add_fish(segment_local, &num_fish_local, &length_segment_local, fish_entering[i]);
     }
-    //free(fish_entering);*/
+    free(fish_entering);
 
     //Calculate the fish eaten locally
     if(num_fish_local >= 2){
@@ -251,12 +237,12 @@ int main (int argc, char const** argv){
             //Adjusting coordinate z to allow next segment to calculate the distance correctly
             fish temp = segment_local[i];
             temp.z = temp.z - max_z_local;
-            add_fish(fish_interaction_out, &index_interaction_out, &length_interaction_out, temp);
+            fish_interaction_out = add_fish(fish_interaction_out, &index_interaction_out, &length_interaction_out, temp);
         }
     }
 
     //Sending fish that can interact
-    /*#define FISH_INTERACTION 33
+    #define FISH_INTERACTION 33
     MPI_Request req2;
     MPI_Isend(fish_interaction_out, index_interaction_out, mpi_fish, (rank+1)%num_segments, FISH_INTERACTION, MPI_COMM_WORLD, &req2);
     //Receving fish that can interact
@@ -267,7 +253,7 @@ int main (int argc, char const** argv){
     MPI_Recv(fish_interaction_in, length_interaction_in, mpi_fish, MPI_ANY_SOURCE, FISH_INTERACTION, MPI_COMM_WORLD, &status_interaction);
 
     //Calculate fish eaten in other segment
-    for(uint32_t i = 0; i < length_interaction_in; i++){
+    /*for(uint32_t i = 0; i < length_interaction_in; i++){
         for(uint32_t j = 0; j < num_fish_local; j++){
             fish *f1 = &fish_interaction_in[i];
             fish *f2 = &segment_local[j];
@@ -277,8 +263,8 @@ int main (int argc, char const** argv){
                 //if f2 eats then communicate the result to previous segment to delete it
             }
         }
-    }
-    //free(fish_interaction_in);*/
+    }*/
+    free(fish_interaction_in);
 
     //Sending info of fish eaten to the segments
 
@@ -291,9 +277,11 @@ int main (int argc, char const** argv){
         //Calculate max and min size of the lake
         max_size_local = 0;
         min_size_local = 0xFF;
+        //printf("Rank %d Num fish local %d, Segment length %d\n", rank, num_fish_local, length_segment_local);
         for(uint32_t i = 0; i < num_fish_local; i++){
             if(segment_local[i].size > max_size_local) max_size_local = segment_local[i].size;
             if(segment_local[i].size < min_size_local) min_size_local = segment_local[i].size;
+            //printf("FIsh size: %d\n", segment_local[i].size);
         }
         uint16_t max_size_global;
         uint16_t min_size_global;
@@ -306,11 +294,10 @@ int main (int argc, char const** argv){
     }
     
     //Free resources
-    //free(fish_exiting);
-    //free(fish_interaction_out);
-    //free(segment_local);
-    //MPI_Type_free(&mpi_fish);
-    printf("process %d size local segment %d\n", rank, num_fish_local);
+    free(fish_exiting);
+    free(fish_interaction_out);
+    free(segment_local);
+    MPI_Type_free(&mpi_fish);
 
     MPI_Finalize();
 
