@@ -36,12 +36,6 @@ uint32_t index_indexes = 0, length_indexes = 0;
 //Max dimention of the z coordinate for the local segment (used as boudary between segments)
 uint32_t max_z_local = 0;
 
-/**
- * Adds a fish object to a queue.
- * Index must refere to the first free cell (also number of fish currently in the queue).
- * Length is the actual allocated space for the fish objects
- * The function add_fish can realloc the queue if the number of fish exceeds the length, the new address of the queue is returned.
-*/
 fish* add_fish(fish *queue, uint32_t *index, uint32_t *length, fish toAdd){
     //If queue is full, increase size
     if((*index) >= (*length)){
@@ -55,12 +49,6 @@ fish* add_fish(fish *queue, uint32_t *index, uint32_t *length, fish toAdd){
     return queue;
 }
 
-/**
- * Remove a fish element from a queue, as a result the index is decreased.
- * The element eliminated is echanged with the last element of the queue 
- * and exits the scope of the queue when the index is decreased.
- * There no check for errors, the index can become inconsistent.
-*/
 fish remove_fish(fish *queue, uint32_t *index, uint32_t toRemove){
     fish removed = queue[toRemove];
     queue[toRemove] = queue[(*index) - 1];
@@ -69,12 +57,6 @@ fish remove_fish(fish *queue, uint32_t *index, uint32_t toRemove){
     return removed;
 }
 
-/**
- * Adds a uint32_t to a queue.
- * Index must refere to the first free cell.
- * Length is the actual allocated space for the fish objects
- * The function add_index can realloc the queue if the number of fish exceeds the length, the new address of the queue is returned.
-*/
 uint32_t* add_index(uint32_t *queue, uint32_t *index, uint32_t *length, uint32_t i){
     if((*index) >= (*length)){
         queue = (uint32_t*)realloc(queue, (*length) * 2 * sizeof(uint32_t));
@@ -87,9 +69,6 @@ uint32_t* add_index(uint32_t *queue, uint32_t *index, uint32_t *length, uint32_t
     return queue;
 }
 
-/**
- * Calculate the distance between two fish.
-*/
 double distance(fish f1, fish f2){
     int32_t x = f1.x - f2.x;
     int32_t y = f1.y - f2.y;
@@ -119,10 +98,6 @@ void eat_fish(fish *f1, fish *f2, uint32_t *i, uint32_t *j){
     }
 }
 
-/**
- * Moves the fish according to the speed and time granularity.
- * Fish that would exit the border of the segment are put in the buffer_fish_out.
-*/
 void move_fish(uint32_t toMove){
     uint32_t distance = fish_local[toMove].speed * t;
 
@@ -272,12 +247,11 @@ int main (int argc, char const** argv){
         }
     }
 
-    //Sending fish that can interact    (avoid for last segment TODO)
+    //Sending fish that can interact
     #define FISH_INTERACTION 33
     MPI_Request req2;
     MPI_Isend(buffer_fish_out, index_out, mpi_fish, (rank+1)%num_segments, FISH_INTERACTION, MPI_COMM_WORLD, &req2);
-    
-    //Receving fish that can interact   (avoid for rank 0 TODO)
+    //Receving fish that can interact
     MPI_Status status_interaction;
     MPI_Probe(MPI_ANY_SOURCE, FISH_INTERACTION, MPI_COMM_WORLD, &status_interaction);
     MPI_Get_count(&status_interaction, mpi_fish, &length_in);
@@ -313,11 +287,11 @@ int main (int argc, char const** argv){
     free(buffer_fish_in);
 
     //Sending info of fish eaten to the segments
-    MPI_Request req3;
-    if(rank != 0){      //Avoid for first segment
-        MPI_Isend(buffer_fish_out, index_out, mpi_fish, rank-1, FISH_INTERACTION, MPI_COMM_WORLD, &req3);
+    if(rank != 0){
+        MPI_Request req3;
+        MPI_Isend(buffer_fish_out, index_out, mpi_fish, rank-1, FISH_INTERACTION, MPI_COMM_WORLD, &req3);      //Don't let last segment send stuff
     }
-    if(rank != num_segments - 1){       //Avoid for last segment
+    if(rank != num_segments - 1){
         buffer_fish_in = malloc(sizeof(fish) * length_indexes);
         length_in = length_indexes;
         MPI_Recv(buffer_fish_in, length_in, mpi_fish, MPI_ANY_SOURCE, FISH_INTERACTION, MPI_COMM_WORLD, &status_interaction);
@@ -369,10 +343,3 @@ int main (int argc, char const** argv){
 
     return 0;
 }
-
-/*
-TODOs
-Chek when use malloc to avoi mem leaks in a loop
-Use malloc-free only un receiving buffer
-Use index = 1 on indexes and sending buffer to avoid using too many mallocs
-*/
