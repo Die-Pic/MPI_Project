@@ -36,6 +36,12 @@ uint32_t index_indexes = 0, length_indexes = 0;
 //Max dimention of the z coordinate for the local segment (used as boudary between segments)
 uint32_t max_z_local = 0;
 
+/**
+ * Adds a fish object to a queue.
+ * Index must refere to the first free cell (also number of fish currently in the queue).
+ * Length is the actual allocated space for the fish objects
+ * The function add_fish can realloc the queue if the number of fish exceeds the length, the new address of the queue is returned.
+*/
 fish* add_fish(fish *queue, uint32_t *index, uint32_t *length, fish toAdd){
     //If queue is full, increase size
     if((*index) >= (*length)){
@@ -49,6 +55,12 @@ fish* add_fish(fish *queue, uint32_t *index, uint32_t *length, fish toAdd){
     return queue;
 }
 
+/**
+ * Remove a fish element from a queue, as a result the index is decreased.
+ * The element eliminated is echanged with the last element of the queue 
+ * and exits the scope of the queue when the index is decreased.
+ * There no check for errors, the index can become inconsistent.
+*/
 fish remove_fish(fish *queue, uint32_t *index, uint32_t toRemove){
     fish removed = queue[toRemove];
     queue[toRemove] = queue[(*index) - 1];
@@ -57,6 +69,12 @@ fish remove_fish(fish *queue, uint32_t *index, uint32_t toRemove){
     return removed;
 }
 
+/**
+ * Adds a uint32_t to a queue.
+ * Index must refere to the first free cell.
+ * Length is the actual allocated space for the fish objects
+ * The function add_index can realloc the queue if the number of fish exceeds the length, the new address of the queue is returned.
+*/
 uint32_t* add_index(uint32_t *queue, uint32_t *index, uint32_t *length, uint32_t i){
     if((*index) >= (*length)){
         queue = (uint32_t*)realloc(queue, (*length) * 2 * sizeof(uint32_t));
@@ -69,6 +87,9 @@ uint32_t* add_index(uint32_t *queue, uint32_t *index, uint32_t *length, uint32_t
     return queue;
 }
 
+/**
+ * Calculate the distance between two fish.
+*/
 double distance(fish f1, fish f2){
     int32_t x = f1.x - f2.x;
     int32_t y = f1.y - f2.y;
@@ -98,6 +119,10 @@ void eat_fish(fish *f1, fish *f2, uint32_t *i, uint32_t *j){
     }
 }
 
+/**
+ * Moves the fish according to the speed and time granularity.
+ * Fish that would exit the border of the segment are put in the buffer_fish_out.
+*/
 void move_fish(uint32_t toMove){
     uint32_t distance = fish_local[toMove].speed * t;
 
@@ -177,9 +202,13 @@ int main (int argc, char const** argv){
     uint32_t time_in_seconds = 0;
     uint32_t time_in_days = 0;
     
-    //Allocation of local fish
+    //Allocation of buffers
     fish_local = (fish*)malloc(sizeof(fish)*num_fish_local);
+    buffer_fish_out = (fish*)malloc(sizeof(fish) * (num_fish_local / 2));
+    indexes_interaction = malloc(sizeof(fish) * (num_fish_local / 2));
     length_fish_local = num_fish_local;
+    length_out = num_fish_local / 2;
+    length_indexes = num_fish_local / 2;
     
     //Spawn of all the fishes of the local segment
     for(uint32_t i = 0; i < num_fish_local; i++){
@@ -195,8 +224,7 @@ int main (int argc, char const** argv){
     }
 
     //Move the fish (also puts fish in fish_exiting)
-    buffer_fish_out = (fish*)malloc(sizeof(fish) * (num_fish_local / 2));
-    index_out = 0, length_out = num_fish_local;
+    index_out = 0;
 
     for (uint32_t i = 0; i < num_fish_local; i++){
         move_fish(i);
@@ -205,8 +233,8 @@ int main (int argc, char const** argv){
 
     //Send the fish that are exiting the segment
     #define EXIT_FISH 32
-    MPI_Request req1;
-    MPI_Isend(buffer_fish_out, index_out, mpi_fish, (rank+1)%num_segments, EXIT_FISH, MPI_COMM_WORLD, &req1);
+    MPI_Request req_exit;
+    MPI_Isend(buffer_fish_out, index_out, mpi_fish, (rank+1)%num_segments, EXIT_FISH, MPI_COMM_WORLD, &req_exit);
     //Receiving fish
     MPI_Status status_entering;
     MPI_Probe(MPI_ANY_SOURCE, EXIT_FISH, MPI_COMM_WORLD, &status_entering);
@@ -233,25 +261,28 @@ int main (int argc, char const** argv){
     }
     
     //Checkign if the fish can interact with other in the next segment (distance from border < eating distance)
-    index_out = 0;                                                      //Check the send is completed for safety TODO
-    indexes_interaction = malloc(sizeof(fish) * length_out);
-    index_indexes = 0, length_indexes = length_out;
+    MPI_Status status;
+    MPI_Wait(&req_exit, &status);       //Check the previous async send is completed for safety
+    index_out = 0;
+    index_indexes = 0;
 
     for(uint32_t i = 0; i < num_fish_local; i++){
         if(fish_local[i].z > max_z_local - d){
             //Adjusting coordinate z to allow next segment to calculate the distance correctly
             fish temp = fish_local[i];
             temp.z = temp.z - max_z_local;
+
             indexes_interaction = add_index(indexes_interaction, &index_indexes, &length_indexes, i);
             buffer_fish_out = add_fish(buffer_fish_out, &index_out, &length_out, temp);
         }
     }
 
-    //Sending fish that can interact
+    //Sending fish that can interact    (avoid for last segment TODO)
     #define FISH_INTERACTION 33
-    MPI_Request req2;
-    MPI_Isend(buffer_fish_out, index_out, mpi_fish, (rank+1)%num_segments, FISH_INTERACTION, MPI_COMM_WORLD, &req2);
-    //Receving fish that can interact
+    MPI_Request req_interaction;
+    MPI_Isend(buffer_fish_out, index_out, mpi_fish, (rank+1)%num_segments, FISH_INTERACTION, MPI_COMM_WORLD, &req_interaction);
+    
+    //Receving fish that can interact   (avoid for rank 0 TODO)
     MPI_Status status_interaction;
     MPI_Probe(MPI_ANY_SOURCE, FISH_INTERACTION, MPI_COMM_WORLD, &status_interaction);
     MPI_Get_count(&status_interaction, mpi_fish, &length_in);
@@ -279,21 +310,23 @@ int main (int argc, char const** argv){
             }
         }
     }
+
     //Preparing the buffer of fish to send back
-    index_out = 0;                                  //Check previous send is completed for safety TODO
+    MPI_Wait(&req_interaction, &status);        //Check the previous async send is completed for safety
+    index_out = 0;
     for(uint32_t i = 0; i < length_in; i++){
         add_fish(buffer_fish_out, &index_out, &length_out, buffer_fish_in[i]);
     }
     free(buffer_fish_in);
 
     //Sending info of fish eaten to the segments
-    if(rank != 0){
-        MPI_Request req3;
-        MPI_Isend(buffer_fish_out, index_out, mpi_fish, rank-1, FISH_INTERACTION, MPI_COMM_WORLD, &req3);      //Don't let last segment send stuff
+    MPI_Request req3;
+    if(rank != 0){      //Avoid for first segment
+        MPI_Isend(buffer_fish_out, index_out, mpi_fish, rank-1, FISH_INTERACTION, MPI_COMM_WORLD, &req3);
     }
-    if(rank != num_segments - 1){
-        buffer_fish_in = malloc(sizeof(fish) * length_indexes);
-        length_in = length_indexes;
+    if(rank != num_segments - 1){       //Avoid for last segment
+        buffer_fish_in = malloc(sizeof(fish) * index_indexes);
+        length_in = index_indexes;          //Receives as many as sent (index_indexes must not be modified between sending and receive)
         MPI_Recv(buffer_fish_in, length_in, mpi_fish, MPI_ANY_SOURCE, FISH_INTERACTION, MPI_COMM_WORLD, &status_interaction);
     }
 
@@ -307,6 +340,7 @@ int main (int argc, char const** argv){
                 fish_local[indexes_interaction[i]].size = buffer_fish_in[i].size;
             }
         }
+        free(buffer_fish_in);
     }
 
     //If end of the day gather info on max and min size
@@ -343,3 +377,10 @@ int main (int argc, char const** argv){
 
     return 0;
 }
+
+/*
+TODOs
+Chek when use malloc to avoi mem leaks in a loop
+Use malloc-free only un receiving buffer
+Use index = 1 on indexes and sending buffer to avoid using too many mallocs
+*/

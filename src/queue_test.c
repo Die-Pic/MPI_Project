@@ -43,5 +43,9 @@ int main(int argc, char const *argv[])
         printf("fish %d\n", queue[i].size);
     }
 
+    uint32_t test = 0;
+    test = (test - 1) % 5;
+    printf("Test: %d\n", test);
+
     return 0;
 }
