@@ -6,13 +6,14 @@
 #include <time.h>
 #include <math.h>
 
-#define N 100            //Number of fish (parameter)
-#define L 10            //Dimension of fishtank (parameter)
-#define v 1             //Speed of fish (parameter)
-#define d 1             //Max eating distance (parameter)
-#define t 2             //Time of each step (parameter)
+#define N 10000              //Number of fish (parameter)
+#define L 1000000000              //Dimension of fishtank (parameter)
+#define v 1                //Speed of fish (parameter)
+#define d 1                //Max eating distance (parameter)
+#define t 60                //Time of each step (parameter)
 #define MAX_SIZE 100
-#define SECONDS_IN_DAY 2//86400 debug
+#define SECONDS_IN_DAY 686400
+#define SIMULATION_DAYS 3
 
 typedef struct fish_s{
     int32_t x, y, z;
@@ -34,7 +35,7 @@ uint32_t length_in = 0;
 uint32_t *indexes_interaction = NULL;
 uint32_t index_indexes = 0, length_indexes = 0;
 //Max dimention of the z coordinate for the local segment (used as boudary between segments)
-uint32_t max_z_local = 0;
+int32_t max_z_local = 0;
 
 /**
  * Adds a fish object to a queue.
@@ -96,27 +97,6 @@ double distance(fish f1, fish f2){
     int32_t z = f1.z - f2.z;
 
     return sqrt(x*x + y*y + z*z);
-}
-
-void eat_fish(fish *f1, fish *f2, uint32_t *i, uint32_t *j){
-    fish *bigger = NULL;
-    uint32_t smaller;
-    
-    if(f1->size > f2->size){
-        bigger = f1;
-        smaller = (*j);
-    }
-    else if(f1->size < f2->size){
-        bigger = f2;
-        smaller = (*i);
-    }
-
-    //If not same size the bigger increase size and the smaller is removed (he ded)
-    if(bigger){
-        bigger->size++;
-        remove_fish(fish_local, &num_fish_local, smaller);
-        (*j)--;                                                        //Necessary to confront all pairs (based on the way the remove works)
-    }
 }
 
 /**
@@ -205,7 +185,7 @@ int main (int argc, char const** argv){
     //Allocation of buffers
     fish_local = (fish*)malloc(sizeof(fish)*num_fish_local);
     buffer_fish_out = (fish*)malloc(sizeof(fish) * (num_fish_local / 2));
-    indexes_interaction = malloc(sizeof(fish) * (num_fish_local / 2));
+    indexes_interaction = malloc(sizeof(uint32_t) * (num_fish_local / 2));
     length_fish_local = num_fish_local;
     length_out = num_fish_local / 2;
     length_indexes = num_fish_local / 2;
@@ -223,148 +203,201 @@ int main (int argc, char const** argv){
         fish_local[i].speed = v;
     }
 
-    //Move the fish (also puts fish in fish_exiting)
-    index_out = 0;
+    while(time_in_days < SIMULATION_DAYS){
+        //Move the fish (also puts fish in fish_exiting)
+        index_out = 0;
 
-    for (uint32_t i = 0; i < num_fish_local; i++){
-        move_fish(i);
-    }
-    time_in_seconds += t;
-
-    //Send the fish that are exiting the segment
-    #define EXIT_FISH 32
-    MPI_Request req_exit;
-    MPI_Isend(buffer_fish_out, index_out, mpi_fish, (rank+1)%num_segments, EXIT_FISH, MPI_COMM_WORLD, &req_exit);
-    //Receiving fish
-    MPI_Status status_entering;
-    MPI_Probe(MPI_ANY_SOURCE, EXIT_FISH, MPI_COMM_WORLD, &status_entering);
-    MPI_Get_count(&status_entering, mpi_fish, &length_in);
-    buffer_fish_in = malloc(sizeof(fish)*length_in);
-    MPI_Recv(buffer_fish_in, length_in, mpi_fish, MPI_ANY_SOURCE, EXIT_FISH, MPI_COMM_WORLD, &status_entering);
-
-    for(uint32_t i = 0; i < length_in; i++){
-        fish_local = add_fish(fish_local, &num_fish_local, &length_fish_local, buffer_fish_in[i]);
-    }
-    free(buffer_fish_in);
-
-    //Calculate the fish eaten locally
-    if(num_fish_local >= 2){
-        for(uint32_t i = 0; i < num_fish_local; i++){
-            for(uint32_t j = i+1; j < num_fish_local; j++){
-                fish *f1 = &fish_local[i];
-                fish *f2 = &fish_local[j];
-                if((int)distance(*f1, *f2) <= d){
-                    eat_fish(f1, f2, &i, &j);
-                }
-            }
+        for (uint32_t i = 0; i < num_fish_local; i++){
+            move_fish(i);
         }
-    }
-    
-    //Checkign if the fish can interact with other in the next segment (distance from border < eating distance)
-    MPI_Status status;
-    MPI_Wait(&req_exit, &status);       //Check the previous async send is completed for safety
-    index_out = 0;
-    index_indexes = 0;
+        time_in_seconds += t;
 
-    for(uint32_t i = 0; i < num_fish_local; i++){
-        if(fish_local[i].z > max_z_local - d){
-            //Adjusting coordinate z to allow next segment to calculate the distance correctly
-            fish temp = fish_local[i];
-            temp.z = temp.z - max_z_local;
+        //Send the fish that are exiting the segment
+        #define EXIT_FISH 32
+        MPI_Request req_exit;
+        MPI_Isend(buffer_fish_out, index_out, mpi_fish, (rank+1)%num_segments, EXIT_FISH, MPI_COMM_WORLD, &req_exit);
+        //Receiving fish
+        MPI_Status status_entering;
+        MPI_Probe(MPI_ANY_SOURCE, EXIT_FISH, MPI_COMM_WORLD, &status_entering);
+        MPI_Get_count(&status_entering, mpi_fish, &length_in);
+        buffer_fish_in = malloc(sizeof(fish)*length_in);
+        MPI_Recv(buffer_fish_in, length_in, mpi_fish, MPI_ANY_SOURCE, EXIT_FISH, MPI_COMM_WORLD, &status_entering);
 
-            indexes_interaction = add_index(indexes_interaction, &index_indexes, &length_indexes, i);
-            buffer_fish_out = add_fish(buffer_fish_out, &index_out, &length_out, temp);
-        }
-    }
-
-    //Sending fish that can interact    (avoid for last segment TODO)
-    #define FISH_INTERACTION 33
-    MPI_Request req_interaction;
-    MPI_Isend(buffer_fish_out, index_out, mpi_fish, (rank+1)%num_segments, FISH_INTERACTION, MPI_COMM_WORLD, &req_interaction);
-    
-    //Receving fish that can interact   (avoid for rank 0 TODO)
-    MPI_Status status_interaction;
-    MPI_Probe(MPI_ANY_SOURCE, FISH_INTERACTION, MPI_COMM_WORLD, &status_interaction);
-    MPI_Get_count(&status_interaction, mpi_fish, &length_in);
-    buffer_fish_in = malloc(sizeof(fish) * length_in);
-    MPI_Recv(buffer_fish_in, length_in, mpi_fish, MPI_ANY_SOURCE, FISH_INTERACTION, MPI_COMM_WORLD, &status_interaction);
-
-    //Calculate fish eaten in other segment
-    #define EATEN 23
-    for(uint32_t i = 0; i < length_in; i++){
-        for(uint32_t j = 0; j < num_fish_local; j++){
-            fish *f1 = &buffer_fish_in[i];
-            fish *f2 = &fish_local[j];
-
-            if(distance(*f1, *f2) <= d){
-                //If f1 eats then remove f2 and return array of indexes of fish that have eaten
-                if(f1->size > f2->size){
-                    f1->size++;
-                    remove_fish(fish_local, &num_fish_local, j);
-                }
-                //if f2 eats then set index on eaten fish array
-                if(f1->size < f2->size){
-                    f2->size++;
-                    f1->direction = EATEN;
-                }
-            }
-        }
-    }
-
-    //Preparing the buffer of fish to send back
-    MPI_Wait(&req_interaction, &status);        //Check the previous async send is completed for safety
-    index_out = 0;
-    for(uint32_t i = 0; i < length_in; i++){
-        add_fish(buffer_fish_out, &index_out, &length_out, buffer_fish_in[i]);
-    }
-    free(buffer_fish_in);
-
-    //Sending info of fish eaten to the segments
-    MPI_Request req3;
-    if(rank != 0){      //Avoid for first segment
-        MPI_Isend(buffer_fish_out, index_out, mpi_fish, rank-1, FISH_INTERACTION, MPI_COMM_WORLD, &req3);
-    }
-    if(rank != num_segments - 1){       //Avoid for last segment
-        buffer_fish_in = malloc(sizeof(fish) * index_indexes);
-        length_in = index_indexes;          //Receives as many as sent (index_indexes must not be modified between sending and receive)
-        MPI_Recv(buffer_fish_in, length_in, mpi_fish, MPI_ANY_SOURCE, FISH_INTERACTION, MPI_COMM_WORLD, &status_interaction);
-    }
-
-    //Updating size and fish eaten according the the interaction result
-    if(rank != num_segments - 1){
-        for(uint32_t i = 0; i < index_indexes; i++){
-            if(buffer_fish_in[i].direction = EATEN){
-                remove_fish(fish_local, &num_fish_local, indexes_interaction[i]);
-            }
-            else{
-                fish_local[indexes_interaction[i]].size = buffer_fish_in[i].size;
-            }
+        //printf("Exiting Rank %d, buffer-out %d, buffer-in %d\n", rank, index_out, length_in); TODO
+        for(uint32_t i = 0; i < length_in; i++){
+            fish_local = add_fish(fish_local, &num_fish_local, &length_fish_local, buffer_fish_in[i]);
         }
         free(buffer_fish_in);
-    }
+        length_in = 0;
 
-    //If end of the day gather info on max and min size
-    if(time_in_seconds >= SECONDS_IN_DAY){
-        //Update day
-        time_in_days++;
-        time_in_seconds -= SECONDS_IN_DAY;
+        //Calculate the fish eaten locally
+        if(num_fish_local >= 2){
+            for(uint32_t i = 0; i < num_fish_local; i++){
+                for(uint32_t j = i+1; j < num_fish_local; j++){
+                    fish *f1 = &fish_local[i];
+                    fish *f2 = &fish_local[j];
+                    if((int)distance(*f1, *f2) <= d){
+                        fish *bigger = NULL;
+                        uint32_t smaller;
+                        
+                        if(f1->size > f2->size){
+                            bigger = f1;
+                            smaller = j;
+                        }
+                        else if(f1->size < f2->size){
+                            bigger = f2;
+                            smaller = i;
+                        }
 
-        //Calculate max and min size of the lake
-        uint32_t max_size_local = 0;
-        uint32_t min_size_local = 0xFF;
-        //printf("Rank %d Num fish local %d, Segment length %d\n", rank, num_fish_local, length_segment_local);
-        for(uint32_t i = 0; i < num_fish_local; i++){
-            if(fish_local[i].size > max_size_local) max_size_local = fish_local[i].size;
-            if(fish_local[i].size < min_size_local) min_size_local = fish_local[i].size;
-            //printf("FIsh size: %d\n", segment_local[i].size);
+                        //If not same size the bigger increase size and the smaller is removed (he ded)
+                        if(bigger){
+                            bigger->size++;
+                            remove_fish(fish_local, &num_fish_local, smaller);
+                            j--;                                                        //Necessary to confront all pairs (based on the way the remove works)
+                        }
+                    }
+                }
+            }
         }
-        uint16_t max_size_global;
-        uint16_t min_size_global;
-        MPI_Reduce(&max_size_local, &max_size_global, 1, MPI_UINT16_T, MPI_MAX, 0, MPI_COMM_WORLD);
-        MPI_Reduce(&min_size_local, &min_size_global, 1, MPI_UINT16_T, MPI_MIN, 0, MPI_COMM_WORLD);
+        /*printf("Rank %d, num-fish-local=%d\n", rank, num_fish_local);
+        if(num_fish_local > 1){
+            for (int i = 0; i < num_fish_local; i++){
+                printf("Fish x=%d, y=%d, z=%d\n", fish_local[i].x, fish_local[i].y, fish_local[i].z);
+            }
+        } TODO */
 
-        if(rank == 0){
-            printf("Day %d: Max size = %d, Min size = %d\n", time_in_days, max_size_global, min_size_global);
+    //--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        //Checkign if the fish can interact with other in the next segment (distance from border < eating distance)
+        MPI_Status status;
+        MPI_Wait(&req_exit, &status);       //Check the previous async send is completed for safety
+        index_out = 0;
+        index_indexes = 0;
+        
+        //printf("Before interaction Rank %d, buffer-out %d, indexes %d, buffer-in %d\n", rank, index_out, index_indexes, length_in);
+        if(rank != num_segments-1){     //Avoid for last segment (it's segment doesn't interact with the first)
+            for(uint32_t i = 0; i < num_fish_local; i++){
+                if(fish_local[i].z > max_z_local - d){
+                    //Adjusting coordinate z to allow next segment to calculate the distance correctly
+                    fish temp = fish_local[i];
+                    temp.z = temp.z - max_z_local;
+
+                    indexes_interaction = add_index(indexes_interaction, &index_indexes, &length_indexes, i);
+                    buffer_fish_out = add_fish(buffer_fish_out, &index_out, &length_out, temp);
+                }
+            }
+        }
+        //printf("Interaction Rank %d, buffer-out %d, indexes %d, buffer-in %d\n", rank, index_out, index_indexes, length_in);
+
+        //Sending fish that can interact
+        #define FISH_INTERACTION 33
+        MPI_Request req_interaction;
+        if(rank != num_segments - 1){       //Last segment doesn't send anything
+            MPI_Isend(buffer_fish_out, index_out, mpi_fish, rank+1, FISH_INTERACTION, MPI_COMM_WORLD, &req_interaction);
+        }
+        
+        //Receving fish that can interact
+        MPI_Status status_interaction;
+        if(rank != 0){                      //First segment doesn't receive anything
+            MPI_Probe(MPI_ANY_SOURCE, FISH_INTERACTION, MPI_COMM_WORLD, &status_interaction);
+            MPI_Get_count(&status_interaction, mpi_fish, &length_in);
+            buffer_fish_in = malloc(sizeof(fish) * length_in);
+            MPI_Recv(buffer_fish_in, length_in, mpi_fish, MPI_ANY_SOURCE, FISH_INTERACTION, MPI_COMM_WORLD, &status_interaction);
+        }
+        //printf("Receving Rank %d, buffer-out %d, indexes %d, buffer-in %d\n", rank, index_out, index_indexes, length_in);
+
+        //Calculate fish eaten in other segment
+        #define EATEN 23
+        if(length_in > 0){                  //Calulates only if something is received
+            for(uint32_t i = 0; i < length_in; i++){
+                for(uint32_t j = 0; j < num_fish_local; j++){
+                    fish *f1 = &buffer_fish_in[i];
+                    fish *f2 = &fish_local[j];
+
+                    if(distance(*f1, *f2) <= d){
+                        //If f1 eats then remove f2 and return array of indexes of fish that have eaten
+                        if(f1->size > f2->size){
+                            f1->size++;
+                            remove_fish(fish_local, &num_fish_local, j);
+                        }
+                        //if f2 eats then set index on eaten in the buffer_in
+                        if(f1->size < f2->size){
+                            f2->size++;
+                            f1->direction = EATEN;
+                        }
+                    }
+                }
+            }
+        }
+        //printf("After check Rank %d, buffer-out %d, indexes %d, buffer-in %d\n", rank, index_out, index_indexes, length_in);
+
+        //Preparing the buffer of fish to send back
+        if(rank != num_segments - 1){
+            MPI_Wait(&req_interaction, &status);        //Check the previous async send is completed for safety (not for last segment that never sent anything)
+        }
+        index_out = 0;
+        if(rank != 0){
+            for(uint32_t i = 0; i < length_in; i++){
+                add_fish(buffer_fish_out, &index_out, &length_out, buffer_fish_in[i]);
+            }
+            free(buffer_fish_in);
+            length_in = 0;
+        }
+        //printf("Prepared response Rank %d, buffer-out %d, indexes %d, buffer-in %d\n", rank, index_out, index_indexes, length_in);
+
+        //Sending info of fish eaten to the segments
+        MPI_Request req_result;
+        #define RESULT_INTERACTION 34
+        if(rank != 0){                                  //Avoid for first segment
+            MPI_Isend(buffer_fish_out, index_out, mpi_fish, rank-1, RESULT_INTERACTION, MPI_COMM_WORLD, &req_result);
+        }
+        if(rank != num_segments - 1){                   //Avoid for last segment
+            buffer_fish_in = malloc(sizeof(fish) * index_indexes);
+            length_in = index_indexes;                  //Receives as many as sent (index_indexes must not be modified between sending and receive)
+            MPI_Recv(buffer_fish_in, length_in, mpi_fish, MPI_ANY_SOURCE, RESULT_INTERACTION, MPI_COMM_WORLD, &status_interaction);
+        }
+        //printf("Received response Rank %d, buffer-out %d, indexes %d, buffer-in %d\n", rank, index_out, index_indexes, length_in);
+
+        //Updating size and fish eaten according the the interaction result
+        if(rank != num_segments - 1){
+            for(uint32_t i = 0; i < index_indexes; i++){
+                if(indexes_interaction[i] < num_fish_local){        //If the fish considered has been eaten by one of the segment before skips the update
+                    if(buffer_fish_in[i].direction = EATEN){
+                        remove_fish(fish_local, &num_fish_local, indexes_interaction[i]);
+                    }
+                    else{
+                        fish_local[indexes_interaction[i]].size = buffer_fish_in[i].size;
+                    }
+                }
+            }
+            free(buffer_fish_in);
+            length_in = 0;
+        }
+
+        //If end of the day gather info on max and min size
+        if(time_in_seconds >= SECONDS_IN_DAY){
+            //Update day
+            time_in_days++;
+            time_in_seconds -= SECONDS_IN_DAY;
+
+            //Calculate max and min size of the lake
+            uint16_t max_size_local = 0;
+            uint16_t min_size_local = 0xFFFF;
+            //printf("Rank %d Num fish local %d, Segment length %d\n", rank, num_fish_local, length_segment_local);
+            for(uint32_t i = 0; i < num_fish_local; i++){
+                if(fish_local[i].size > max_size_local) max_size_local = fish_local[i].size;
+                if(fish_local[i].size < min_size_local) min_size_local = fish_local[i].size;
+            }
+
+            uint16_t max_size_global;
+            uint16_t min_size_global;
+            uint32_t num_fish_global;
+            MPI_Reduce(&max_size_local, &max_size_global, 1, MPI_UINT16_T, MPI_MAX, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&min_size_local, &min_size_global, 1, MPI_UINT16_T, MPI_MIN, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&num_fish_local, &num_fish_global, 1, MPI_UINT32_T, MPI_SUM, 0, MPI_COMM_WORLD);
+
+            if(rank == 0){
+                printf("Day %d: Num fish: %d, Max size = %d, Min size = %d\n", time_in_days, num_fish_global, max_size_global, min_size_global);
+            }
         }
     }
     
@@ -380,7 +413,8 @@ int main (int argc, char const** argv){
 
 /*
 TODOs
-Chek when use malloc to avoi mem leaks in a loop
-Use malloc-free only un receiving buffer
+Chek when to use malloc-free to avoid mem leaks in a loop
+Chek which ranks shuld do the interaction (edge cases rank 0 and rank max)
+Use malloc-free only on receiving buffer
 Use index = 1 on indexes and sending buffer to avoid using too many mallocs
 */
